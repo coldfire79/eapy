@@ -11,6 +11,9 @@ class Individual:
         self._score = -1
         self._is_evaluated = False
 
+    def __str__(self):
+        return "{0}\t{1}\t{2}".format(self._vector, self._score, self._is_evaluated)
+
     @property
     def vector(self):
         return self._vector
@@ -68,6 +71,12 @@ class Population:
     # @property
     # def score(self):
     #     return self._score
+
+    def __str__(self):
+        _str = ""
+        for elem in self._individuals:
+            _str += str(elem) + "\n"
+        return _str
 
     @property
     def size(self):
@@ -192,6 +201,12 @@ class MultiPopulationsWithSameSize:
                 individual = population.get(i * self._subpopulation_size + j)
                 neighborhood.add_individual(individual)
             self._subpopulations.append(neighborhood)
+
+    def __str__(self):
+        _str = ""
+        for elem in self._subpopulations:
+            _str += str(elem) + "\n"
+        return _str
 
     @property
     def size(self):

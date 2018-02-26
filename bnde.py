@@ -86,6 +86,7 @@ def selection(population, target_idx, cost_fn, v_trial_individual):
     score_trial = cost_fn(v_trial_individual)
     score_target = cost_fn(population.get(target_idx))
     if score_trial <= score_target:
+        # print(score_trial, "<=", score_target)
         population.set(target_idx, v_trial_individual)
     return score_trial, score_target
 
@@ -136,39 +137,64 @@ def euclidean_dist(list1, list2):
     return np.linalg.norm(np.array(list1)-np.array(list2))
 
 
-def diversity_preserving(neighbors, centers, archive, bounds, cost_fn, overlapping_threshold=0.01, d0=1.0E-16):
+def diversity_preserving(neighbors, archive, bounds, cost_fn, overlapping_threshold=0.01, d0=1.0E-16):
     S = []
+    centers = neighbors.get_centers()
     for i in range(neighbors.size):
         sub_pop_i = neighbors.get_subpopulation(i)
+        best_i, worst_i = sub_pop_i.get_best_worst(redo=False)
         if i in S:
             continue
         # the neighborhood is considered as converged once
         random_index = np.random.randint(sub_pop_i.size)
         r_i = euclidean_dist(centers[i], sub_pop_i.get(random_index).vector)
         if r_i <= d0:
-            archive.append(sub_pop_i.get_best())
+            # print("Neighborhood converged:{0}".format(str(best_i)))
+            archive.append(best_i)
             new_pop = reinitialize_population(bounds, cost_fn, sub_pop_i)
             neighbors.update_subpopulation(i, new_pop)
+            # print("{0}: reinitialized".format(i))
+            # print("new_pop")
+            # print(str(new_pop))
+            # print("neighbors")
+            # print(str(neighbors))
             S.append(i)
         for j in range(i+1, neighbors.size):
             d_i_j = euclidean_dist(centers[i], centers[j])
             if (j in S) | (d_i_j > overlapping_threshold):
                 continue
             sub_pop_j = neighbors.get_subpopulation(j)
-            best_i, worst_i = sub_pop_i.get_best_worst(redo=False)
             best_j, worst_j = sub_pop_j.get_best_worst(redo=False)
             # for minimization problem: TODO
             if best_i.score <= best_j.score:
                 if best_j.score <= worst_i.score:
+                    # print(neighbors.get_subpopulation_individual(i, sub_pop_i.worst_index))
+                    # print(best_j)
                     neighbors.update_individual(i, sub_pop_i.worst_index, best_j)
+                    # print("neighbors.update_individual(i, sub_pop_i.worst_index, best_j)")
+                    # print(neighbors.get_subpopulation_individual(i, sub_pop_i.worst_index))
                 new_pop = reinitialize_population(bounds, cost_fn, sub_pop_j)
                 neighbors.update_subpopulation(j, new_pop)
+                # print("{0}: reinitialized".format(j))
+                # print("new_pop")
+                # print(str(new_pop))
+                # print("neighbors")
+                # print(str(neighbors))
                 S.append(j)
             else:
                 if best_i.score <= worst_j.score:
+                    # print(neighbors.get_subpopulation_individual(j, sub_pop_j.worst_index))
+                    # print(best_i)
                     neighbors.update_individual(j, sub_pop_j.worst_index, best_i)
+                    # print("neighbors.update_individual(j, sub_pop_j.worst_index, best_i)")
+                    # print(neighbors.get_subpopulation_individual(j, sub_pop_j.worst_index))
                 new_pop = reinitialize_population(bounds, cost_fn, sub_pop_i)
                 neighbors.update_subpopulation(i, new_pop)
+                # print("{0}: reinitialized".format(i))
+                # print("new_pop")
+                # print(str(new_pop))
+                # print("neighbors")
+                # print(str(neighbors))
                 S.append(i)
                 break
     return neighbors
@@ -176,33 +202,43 @@ def diversity_preserving(neighbors, centers, archive, bounds, cost_fn, overlappi
 
 def reinitialize_population(bounds, cost_fn, sub_pop):
     new_pop = init.uniform_random(sub_pop.size, bounds)
-    # sub_pop.replace(new_pop)
     init_eval(new_pop, cost_fn)
     return new_pop
 
 
 def update_pe(num_neighbors, neighborhoodSize, mu_pe, q=0.1):
     next_pe = []
+    pop_total = num_neighbors * neighborhoodSize
+    _pe = np.random.normal(mu_pe, 0.1, pop_total)
+    _pe[_pe < 0] = 0
+    _pe[_pe > 1] = 1
     for i in range(num_neighbors):
-        next_pe.append(list(np.random.normal(mu_pe, 0.1, neighborhoodSize)))
+        next_pe.append(list(_pe[i*neighborhoodSize:(i+1)*neighborhoodSize]))
     return next_pe, (1-q)*mu_pe + q*np.mean(next_pe)
 
 
 def update_cr_bnde(num_neighbors, neighborhoodSize, mu_cr, q=0.1):
     next_cr = []
+    pop_total = num_neighbors * neighborhoodSize
+    _tmp = np.random.normal(mu_cr, 0.1, pop_total)
+    _tmp[_tmp < 0] = 0
+    _tmp[_tmp > 1] = 1
     for i in range(num_neighbors):
-        next_cr.append(list(np.random.normal(mu_cr, 0.1, neighborhoodSize)))
+        next_cr.append(list(_tmp[i*neighborhoodSize:(i+1)*neighborhoodSize]))
     return next_cr, (1 - q) * mu_cr + q * np.mean(next_cr)
 
-def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, F):
+def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0=1.0E-16):
 
     #--- INITIALIZE A POPULATION (step #1) ----------------+
     archive = []  # a archive to store all the local best
 
     population = init.uniform_random(pop_size, bounds)
+    print(str(population))
     best = init_eval(population, benchmark.eval)
+    print(str(population))
     neighbors = MultiPopulationsWithSameSize(pop_size, neighborhoodSize, population)
-    centers = neighbors.get_centers()
+    print(str(neighbors))
+
 
     # cr = init_cr(pop_size)
     # mutation_strategy = init_mutation_strategies(pop_size)
@@ -218,38 +254,40 @@ def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, F):
         pe, mu_pe = update_pe(neighbors.size, neighborhoodSize, mu_pe, q=0.1)
         cr, mu_cr = update_cr_bnde(neighbors.size, neighborhoodSize, mu_cr, q=0.1)
 
-        diversity_preserving(neighbors, centers, archive, bounds, benchmark.eval, d0=1.0E-16)
+        diversity_preserving(neighbors, archive, bounds, benchmark.eval, d0=d0)
         chi = np.exp(-4.0*(benchmark.numFE/maxFE+0.4))
         # cycle through each individual in the population
         best_scores = []
         for i in range(neighbors.size):
             sub_pop_i = neighbors.get_subpopulation(i)
             best_i, worst_i = sub_pop_i.get_best_worst(redo=True)
-            best_scores.append(benchmark.error(best_i.score))
+            best_scores.append(benchmark.error(best_i))
             for j in range(sub_pop_i.size):
                 x_t = sub_pop_i.get(j).vector
 
                 #--- MUTATION (step #3.A) ---------------------+
 
                 v_donor = gaussian_mutation_bnde(sub_pop_i.best_index, j, sub_pop_i, bounds, pe[i][j], chi)
+                # print("v_donor", v_donor)
                 # if mutation_strategy[j] == 0:
                 #     v_donor = gaussian_mutation(best, population.get(j), bounds)
                 # else:
                 #     v_donor = de_best_1_mutation(best, population, j, bounds, F)
 
-            #--- RECOMBINATION (step #3.B) ----------------+
-            v_trial = crossover(v_donor, x_t, cr[i][j])
+                #--- RECOMBINATION (step #3.B) ----------------+
+                v_trial = crossover(v_donor, x_t, cr[i][j])
+                # print("v_trial", v_trial)
 
-            #--- GREEDY SELECTION (step #3.C) -------------+
-            score_trial, score_target = selection(population, j, benchmark.eval, Individual(v_trial))
-
+                #--- GREEDY SELECTION (step #3.C) -------------+
+                score_trial, score_target = selection(sub_pop_i, j, benchmark.eval, Individual(v_trial))
+                # print("numFE:", benchmark.numFE)
         #--- SCORE KEEPING --------------------------------+
 
         # gen_avg = sum(gen_scores) / pop_size                         # current generation avg. fitness
         # gen_best = min(gen_scores)                                  # fitness of best individual
         # gen_sol = population.get(gen_scores.index(min(gen_scores)))     # solution of best individual
 
-        if benchmark.numFE % 10000 == 0:
+        if benchmark.numFE % 1000 == 0:
             print('numFE:', benchmark.numFE)
             # print('      > GENERATION AVERAGE:', gen_avg)
             # print('      > GENERATION BEST:', gen_best)
@@ -260,28 +298,28 @@ def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, F):
             print('      > GENERATION BEST of BEST:', np.min(best_scores))
             print('      > GENERATION WORST of BEST:', np.max(best_scores))
             print('----------------------------------------------')
-        # if benchmark.is_solution(best):
-        #     print('Find a solution! numFE:{0}'.format(benchmark.numFE))
-        #     break
+    for solution in archive:
+        print(solution)
     return population
 
 
 def test():
-    # random.seed(0)
-    dim = 2
+    random.seed(0)
+    dim = 5
     benchmark = Shubert(dim)
     bounds = [[-10, 10]]*dim
-    pop_size = 150
+    pop_size = 200
     F = 0.5
     CR = 0.9
-    maxFE = 80000
+    maxFE = 1000000
 
-    neighborhoodSize = 3
+    neighborhoodSize = 5
     numNeighborhoods = pop_size // neighborhoodSize
 
+    d0 = 10 ** (-16/np.sqrt(dim))
     # --- RUN ----------------------------------------------------------------------+
 
-    bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, F)
+    bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0)
 
 
 if __name__ == "__main__":
