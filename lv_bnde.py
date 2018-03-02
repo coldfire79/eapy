@@ -5,9 +5,8 @@ BNDE: Bare-Bones Niching DE
 import random
 import numpy as np
 import scipy.io
-import initialize as init
 from benchmark.multimodal import BenchmarkMultiModal
-from population import Individual, MultiPopulationsWithSameSize
+from population import Individual, Population, MultiPopulationsWithSameSize
 from glvmodel import GeneralizedLotkaVolterra
 
 
@@ -25,7 +24,7 @@ def gaussian_mutation_bnde(best_idx, target_idx, population, bounds, PE, chi):
     candidates = [k for k in range(pop_size) if (k != target_idx) & (k != best_idx)]
     random_index = random.sample(candidates, 1)
     x_rand = population.get(random_index[0]).vector
-    x_best =  population.get(best_idx).vector
+    x_best = population.get(best_idx).vector
     x_t = population.get(target_idx).vector
 
     _mean = x_best
@@ -36,6 +35,49 @@ def gaussian_mutation_bnde(best_idx, target_idx, population, bounds, PE, chi):
     else:
         _std = [chi * (b[1]-b[0]) for b in bounds]
     v_donor = [np.random.normal(mu, sigma) for mu, sigma in zip(_mean, _std)]
+    v_donor = ensure_bounds(v_donor, bounds)
+    return v_donor
+
+
+def gaussian_mutation_lv_bnde(best_idx, target_idx, population, bounds, PE, chi):
+    """
+        gaussian mutation for interaction values
+        binary mutation for
+    :param best_idx:
+    :param target_idx:
+    :param population:
+    :param bounds:
+    :param PE:
+    :param chi:
+    :return:
+    """
+
+    flip = lambda x: (x + 1) % 2
+
+    pop_size = population.size
+    # select three random vector index positions [0, pop_size), not including current vector (j)
+    candidates = [k for k in range(pop_size) if (k != target_idx) & (k != best_idx)]
+    random_index = random.sample(candidates, 1)
+    x_rand = population.get(random_index[0]).vector
+    x_best = population.get(best_idx).vector
+    x_t = population.get(target_idx).vector
+
+    vec_len = len(bounds)
+    half = vec_len // 2
+
+    _mean = x_best
+
+    # for interaction structures [:half]
+    v_donor = [flip(k) if p > PE else k for k, p in zip(_mean[:half], np.random.rand(half))]
+
+    # for interaction values [half:]
+    prob = np.random.rand()
+    if prob > PE:
+        _std = [abs(x_rand_i - x_target_i) for x_rand_i, x_target_i in zip(x_rand[half:], x_t[half:])]
+    else:
+        _std = [chi * (b[1]-b[0]) for b in bounds[half:]]
+    v_donor += [np.random.normal(mu, sigma) for mu, sigma in zip(_mean[half:], _std)]
+
     v_donor = ensure_bounds(v_donor, bounds)
     return v_donor
 
@@ -139,9 +181,38 @@ def euclidean_dist(list1, list2):
     return np.linalg.norm(np.array(list1)-np.array(list2))
 
 
+def get_interaction_matrix_from_individual(individual, half):
+    nonzeros = [0 if i < 0.5 else 1 for i in individual[0:half]]
+    interactions = [m * n for m, n in zip(nonzeros, individual[half:])]
+    return interactions
+
+
+def get_centers(neighbors, leng):
+    """
+        get centers with considering interaction structure and values
+    :param neighbors:
+    :return:
+    """
+    centers = []
+
+    for k in range(neighbors.size):
+        sub_pop = neighbors.get_subpopulation(k)
+        s = sub_pop.size
+        if s > 0:
+            center = get_interaction_matrix_from_individual(sub_pop.get(0).vector, leng)
+            for i in range(1, s):
+                interaction = get_interaction_matrix_from_individual(sub_pop.get(i).vector, leng)
+                center = [x + y for x, y in zip(center, interaction)]
+            center = [x / s for x in center]
+            centers.append(center)
+
+    return centers
+
+
 def diversity_preserving(neighbors, archive, bounds, cost_fn, overlapping_threshold=0.01, d0=1.0E-16):
     S = []
-    centers = neighbors.get_centers()
+    half = len(bounds)//2
+    centers = get_centers(neighbors, half)
     for i in range(neighbors.size):
         sub_pop_i = neighbors.get_subpopulation(i)
         best_i, worst_i = sub_pop_i.get_best_worst(redo=False)
@@ -149,17 +220,12 @@ def diversity_preserving(neighbors, archive, bounds, cost_fn, overlapping_thresh
             continue
         # the neighborhood is considered as converged once
         random_index = np.random.randint(sub_pop_i.size)
-        r_i = euclidean_dist(centers[i], sub_pop_i.get(random_index).vector)
+        interaction = get_interaction_matrix_from_individual(sub_pop_i.get(random_index).vector, half)
+        r_i = euclidean_dist(centers[i], interaction)
         if r_i <= d0:
-            # print("Neighborhood converged:{0}".format(str(best_i)))
             archive.append(best_i)
             new_pop = reinitialize_population(bounds, cost_fn, sub_pop_i)
             neighbors.update_subpopulation(i, new_pop)
-            # print("{0}: reinitialized".format(i))
-            # print("new_pop")
-            # print(str(new_pop))
-            # print("neighbors")
-            # print(str(neighbors))
             S.append(i)
         for j in range(i+1, neighbors.size):
             d_i_j = euclidean_dist(centers[i], centers[j])
@@ -170,40 +236,22 @@ def diversity_preserving(neighbors, archive, bounds, cost_fn, overlapping_thresh
             # for minimization problem: TODO
             if best_i.score <= best_j.score:
                 if best_j.score <= worst_i.score:
-                    # print(neighbors.get_subpopulation_individual(i, sub_pop_i.worst_index))
-                    # print(best_j)
                     neighbors.update_individual(i, sub_pop_i.worst_index, best_j)
-                    # print("neighbors.update_individual(i, sub_pop_i.worst_index, best_j)")
-                    # print(neighbors.get_subpopulation_individual(i, sub_pop_i.worst_index))
                 new_pop = reinitialize_population(bounds, cost_fn, sub_pop_j)
                 neighbors.update_subpopulation(j, new_pop)
-                # print("{0}: reinitialized".format(j))
-                # print("new_pop")
-                # print(str(new_pop))
-                # print("neighbors")
-                # print(str(neighbors))
                 S.append(j)
             else:
                 if best_i.score <= worst_j.score:
-                    # print(neighbors.get_subpopulation_individual(j, sub_pop_j.worst_index))
-                    # print(best_i)
                     neighbors.update_individual(j, sub_pop_j.worst_index, best_i)
-                    # print("neighbors.update_individual(j, sub_pop_j.worst_index, best_i)")
-                    # print(neighbors.get_subpopulation_individual(j, sub_pop_j.worst_index))
                 new_pop = reinitialize_population(bounds, cost_fn, sub_pop_i)
                 neighbors.update_subpopulation(i, new_pop)
-                # print("{0}: reinitialized".format(i))
-                # print("new_pop")
-                # print(str(new_pop))
-                # print("neighbors")
-                # print(str(neighbors))
                 S.append(i)
                 break
     return neighbors
 
 
 def reinitialize_population(bounds, cost_fn, sub_pop):
-    new_pop = init.uniform_random(sub_pop.size, bounds)
+    new_pop = init_population(sub_pop.size, bounds)
     init_eval(new_pop, cost_fn)
     return new_pop
 
@@ -229,21 +277,45 @@ def update_cr_bnde(num_neighbors, neighborhoodSize, mu_cr, q=0.1):
         next_cr.append(list(_tmp[i*neighborhoodSize:(i+1)*neighborhoodSize]))
     return next_cr, (1 - q) * mu_cr + q * np.mean(next_cr)
 
+
+def init_population(pop_size, bounds, mode="minimization"):
+    """
+        initialize non-zero positions and interaction matrix
+    :param pop_size: population size
+    :param bounds: upper and lower bounds
+    :param mode: whether minimization or maximization
+    :return:
+    """
+    population = Population(pop_size, mode)
+    vec_len = len(bounds)
+    half = vec_len // 2
+    for i in range(pop_size):
+        vector = []
+        # for defining interaction structure
+        for j in range(half):
+            if random.uniform(bounds[j][0], bounds[j][1]) < 0.5:
+                vector.append(0)
+            else:
+                vector.append(1)
+        # for defining interactions
+        for j in range(half):
+            vector.append(random.uniform(bounds[half+j][0], bounds[half+j][1]))
+        population.add_individual(Individual(vector))
+    return population
+
+
 def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0=1.0E-16):
 
     #--- INITIALIZE A POPULATION (step #1) ----------------+
     archive = []  # a archive to store all the local best
 
-    population = init.uniform_random(pop_size, bounds)
-    print(str(population))
+    population = init_population(pop_size, bounds)
+
+    # print(str(population))
     best = init_eval(population, benchmark.eval)
-    print(str(population))
+    # print(str(population))
     neighbors = MultiPopulationsWithSameSize(pop_size, neighborhoodSize, population)
-    print(str(neighbors))
-
-
-    # cr = init_cr(pop_size)
-    # mutation_strategy = init_mutation_strategies(pop_size)
+    # print(str(neighbors))
 
     mu_pe = 0.5
     mu_cr = 0.5
@@ -264,13 +336,13 @@ def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0=1.0E-16):
             sub_pop_i = neighbors.get_subpopulation(i)
             best_i, worst_i = sub_pop_i.get_best_worst(redo=True)
             best_scores.append(benchmark.error(best_i))
-            print(best_i)
+            # print(best_i)
             for j in range(sub_pop_i.size):
                 x_t = sub_pop_i.get(j).vector
 
                 #--- MUTATION (step #3.A) ---------------------+
 
-                v_donor = gaussian_mutation_bnde(sub_pop_i.best_index, j, sub_pop_i, bounds, pe[i][j], chi)
+                v_donor = gaussian_mutation_lv_bnde(sub_pop_i.best_index, j, sub_pop_i, bounds, pe[i][j], chi)
                 # print("v_donor", v_donor)
                 # if mutation_strategy[j] == 0:
                 #     v_donor = gaussian_mutation(best, population.get(j), bounds)
@@ -289,21 +361,30 @@ def bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0=1.0E-16):
         # gen_avg = sum(gen_scores) / pop_size                         # current generation avg. fitness
         # gen_best = min(gen_scores)                                  # fitness of best individual
         # gen_sol = population.get(gen_scores.index(min(gen_scores)))     # solution of best individual
+        # print("benchmark.numFE")
+        print(str(benchmark.numFE)+"\r", end="")
 
-        if benchmark.numFE % 1000 == 0:
+        if benchmark.numFE % 10000 == 0:
             print('numFE:', benchmark.numFE)
             # print('      > GENERATION AVERAGE:', gen_avg)
             # print('      > GENERATION BEST:', gen_best)
             # print('         > BEST SOLUTION:', gen_sol)
             print('----------------------------------------------')
-            print('      > GENERATION AVG BEST:', np.mean(best_scores))
-            print('      > GENERATION STD BEST:', np.std(best_scores))
+            # print('      > GENERATION AVG BEST:', np.mean(best_scores))
+            # print('      > GENERATION STD BEST:', np.std(best_scores))
             print('      > GENERATION BEST of BEST:', np.min(best_scores))
-            print('      > GENERATION WORST of BEST:', np.max(best_scores))
+            # print('      > GENERATION WORST of BEST:', np.max(best_scores))
+
+            # historical solutions in archive
+            if len(archive) > 0:
+                print('      > HISTORICAL BEST of BEST:', np.min([ind.score for ind in archive]))
             print('----------------------------------------------')
+    print('----------------------------------------------')
     for solution in archive:
-        print(solution)
-    return population
+        print('  > SOL in archive:', solution)
+    print('----------------------------------------------')
+    print(neighbors)
+    return neighbors
 
 
 class LVInference(BenchmarkMultiModal):
@@ -316,12 +397,12 @@ class LVInference(BenchmarkMultiModal):
         global_optima = [1] * half + list(true_interactions.flatten())
 
         def fn(individual):
-            # nonzeros = [0 if i < 0.5 else 1 for i in individual[0:half]]
+            nonzeros = [0 if i < 0.5 else 1 for i in individual[0:half]]
             # nonzeros[nonzeros < 0.5] = 0
             # nonzeros[nonzeros >= 0.5] = 1
 
-            # interactions = [m * n for m, n in zip(nonzeros, individual[half:])]
-            interactions = individual[half:]
+            interactions = [m * n for m, n in zip(nonzeros, individual[half:])]
+            # interactions = individual[half:]
 
             model = GeneralizedLotkaVolterra(num_species, growth_rate, np.array(interactions).reshape(-1, num_species))
             err = model.cost_fn(y_dot, A, R)
@@ -342,10 +423,15 @@ def read_mat(mat_file):
 
 
 def test():
-    random.seed(0)
+    # random.seed(0)
 
     ################ reference model
-    num_species, r_ans, A_ans, y_ans = read_mat('/Volumes/HotLakeModeling/Network inference/Data for Processes paper/3_0.5_1_1.mat')
+    # num_species, r_ans, A_ans, y_ans = read_mat(
+    #     '/Volumes/HotLakeModeling/Network inference/Data for Processes paper/3_0.5_1_1.mat')
+    num_species, r_ans, A_ans, y_ans = read_mat(
+        '/Volumes/HotLakeModeling/Network inference/Data for Processes paper/5_0.5_0.8_24.mat')
+    # num_species, r_ans, A_ans, y_ans = read_mat(
+    #     '/Volumes/HotLakeModeling/Network inference/Data for Processes paper/10_0.5_0.4_1.mat')
     print("Num of Species:{0}".format(num_species))
     print("Growth rate:{0}".format(list(r_ans)))
     print("Interaction matrix:{0}".format(A_ans))
@@ -361,18 +447,18 @@ def test():
     print("optimum err:", err)
     ################
 
-    dim = 2 * num_species * num_species
-    benchmark = LVInference(dim, num_species, np.array(list(r_ans)), y_dot, A, R, A_ans, r=err)
-    bounds = [[0, 1]]*dim
+    dim = num_species * num_species
+    benchmark = LVInference(2*dim, num_species, np.array(list(r_ans)), y_dot, A, R, A_ans, r=err)
+    bounds = ([[0, 1]]*dim)+([[-1, 1]]*dim)
     pop_size = 200
-    F = 0.5
-    CR = 0.9
-    maxFE = 20000
+    # F = 0.5
+    # CR = 0.9
+    maxFE = 200000
 
-    neighborhoodSize = 5
+    neighborhoodSize = 3
     numNeighborhoods = pop_size // neighborhoodSize
 
-    d0 = 10 ** (-16/np.sqrt(dim))
+    d0 = 10 ** (-16/np.sqrt(2*dim))
     # --- RUN ----------------------------------------------------------------------+
 
     bnde_run(benchmark, bounds, pop_size, neighborhoodSize, maxFE, d0)

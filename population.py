@@ -158,7 +158,7 @@ class Population:
             return self._best_individual
 
     def get_best_worst(self, redo=True):
-        if redo:
+        if redo | (self._best_individual is None):
             self._scores = self.get_scores()
             self.update_best_score(self._scores)
         return self._best_individual, self._worst_individual
